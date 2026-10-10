@@ -237,13 +237,15 @@ final class NativeVisibilityManager {
         NSWorkspace.shared.publisher(for: \.runningApplications)
             .map { Set($0.compactMap(\.bundleIdentifier)) }
             .removeDuplicates()
+            .scan((previous: Set<String>(), current: Set<String>())) { ($0.current, $1) }
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] change in
                 guard let self, assertion != nil else {
                     return
                 }
                 update()
+                classifyLaunchedApps(change.current.subtracting(change.previous))
             }
             .store(in: &cancellables)
 
@@ -308,6 +310,66 @@ final class NativeVisibilityManager {
         }
         lastWarning = message
         Logger.nativeVisibility.warning(message)
+    }
+
+    /// Hides newly launched apps whose items macOS placed in a hidden section.
+    ///
+    /// macOS places new items on the left, which is usually a hidden section.
+    /// Launched apps are allowed until their items appear, so they're never
+    /// hidden by mistake, and their sections are then read from their items.
+    private func classifyLaunchedApps(_ bundleIdentifiers: Set<String>) {
+        let launched = bundleIdentifiers.subtracting(Self.systemItemOwners)
+        guard !launched.isEmpty else {
+            return
+        }
+        Task { [weak self] in
+            var pending = launched
+            // An app's item may take a while to appear after launch.
+            for delay in [0.5, 1, 2, 4, 8] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard
+                    let self,
+                    assertion != nil,
+                    layout != nil,
+                    let appState,
+                    let hiddenFrame = appState.menuBarManager.section(withName: .hidden)?.controlItem.windowFrame
+                else {
+                    return
+                }
+                let alwaysHiddenFrame = appState.settingsManager.advancedSettingsManager.enableAlwaysHiddenSection
+                    ? appState.menuBarManager.section(withName: .alwaysHidden)?.controlItem.windowFrame
+                    : nil
+                let apps = NSWorkspace.shared.runningApplications.compactMap { app -> (pid_t, String)? in
+                    guard let bundleIdentifier = app.bundleIdentifier, pending.contains(bundleIdentifier) else {
+                        return nil
+                    }
+                    return (app.processIdentifier, bundleIdentifier)
+                }
+                let inventory = await Task.detached(priority: .userInitiated) {
+                    Self.inventory(of: apps)
+                }.value
+                var changed = false
+                // Items that aren't drawn report a negative position.
+                for item in inventory where item.frame.minX >= 0 && pending.contains(item.bundleIdentifier) {
+                    let section = Self.section(
+                        of: item.frame,
+                        hiddenFrame: hiddenFrame,
+                        alwaysHiddenFrame: alwaysHiddenFrame
+                    )
+                    let current = self.layout?.sections[item.bundleIdentifier]
+                    self.layout?.sections[item.bundleIdentifier] = current.map { Self.mostVisible($0, section) } ?? section
+                    pending.remove(item.bundleIdentifier)
+                    changed = true
+                }
+                if changed {
+                    Logger.nativeVisibility.info("Read sections of launched apps: \(launched.sorted())")
+                    update()
+                }
+                if pending.isEmpty {
+                    return
+                }
+            }
+        }
     }
 
     /// Tries again shortly, until the update succeeds or the state changes.
