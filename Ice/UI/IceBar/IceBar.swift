@@ -103,7 +103,12 @@ final class IceBarPanel: NSPanel {
         }
 
         func getOrigin(for iceBarLocation: IceBarLocation) -> CGPoint {
-            let menuBarHeight = screen.getMenuBarHeight() ?? 0
+            let menuBarHeight = if NativeVisibilityManager.isEnabled {
+                // On macOS 27, the menu bar has no window of its own to measure.
+                screen.frame.maxY - screen.visibleFrame.maxY
+            } else {
+                screen.getMenuBarHeight() ?? 0
+            }
             let originY = ((screen.frame.maxY - 1) - menuBarHeight) - frame.height
 
             var originForRightOfScreen: CGPoint {
@@ -136,10 +141,10 @@ final class IceBarPanel: NSPanel {
                 guard
                     lowerBound <= upperBound,
                     let section = appState.menuBarManager.section(withName: .visible),
-                    let windowID = section.controlItem.windowID,
-                    // Bridging.getWindowFrame is more reliable than ControlItem.windowFrame,
-                    // i.e. if the control item is offscreen.
-                    let itemFrame = Bridging.getWindowFrame(for: windowID)
+                    let itemFrame = NativeVisibilityManager.isEnabled
+                        // On macOS 27, only the item window's horizontal position is meaningful.
+                        ? section.controlItem.window?.frame
+                        : section.controlItem.windowID.flatMap(Bridging.getWindowFrame(for:))
                 else {
                     return originForRightOfScreen
                 }
@@ -159,6 +164,23 @@ final class IceBarPanel: NSPanel {
         // Important that we set the navigation state and current section before updating the cache.
         appState.navigationState.isIceBarPresented = true
         currentSection = section
+
+        if NativeVisibilityManager.isEnabled {
+            let hostingView = NSHostingView(
+                rootView: NativeIceBarContentView(
+                    manager: appState.menuBarManager.nativeVisibilityManager,
+                    screen: screen,
+                    section: section
+                ) { [weak self] in
+                    self?.close()
+                }
+            )
+            contentView = hostingView
+            setContentSize(hostingView.fittingSize)
+            updateOrigin(for: screen)
+            orderFrontRegardless()
+            return
+        }
 
         await appState.itemManager.cacheItemsIfNeeded()
 

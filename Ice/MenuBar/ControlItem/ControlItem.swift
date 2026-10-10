@@ -424,10 +424,15 @@ final class ControlItem {
             return
         }
         // On macOS 27, the status item's window is taller than the menu bar,
-        // so a menu attached to it opens too far below the menu bar.
+        // so a menu attached to it opens too far below the menu bar. Only work
+        // around it while that's the case, so a fixed macOS gets the system's
+        // own placement back.
         let x = window.frame.minX
         let screen = NSScreen.screens.first { $0.frame.minX <= x && x < $0.frame.maxX } ?? NSScreen.main
-        guard let screen else {
+        guard
+            let screen,
+            window.frame.height > screen.frame.maxY - screen.visibleFrame.maxY + 1
+        else {
             statusItem.showMenu(menu)
             return
         }

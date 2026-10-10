@@ -5,6 +5,7 @@
 
 import Cocoa
 import Combine
+import ScreenCaptureKit
 
 // MARK: - MenuBarClientCore
 
@@ -145,7 +146,7 @@ enum NativeVisibilityError: LocalizedError {
 /// several items hides or shows them all, and the most visible section wins.
 /// macOS's own items (clock, Control Center, etc.) are always kept visible.
 @MainActor
-final class NativeVisibilityManager {
+final class NativeVisibilityManager: ObservableObject {
     /// A Boolean value that indicates whether hiding should use the native
     /// mechanism instead of expanding control items.
     static let isEnabled: Bool = {
@@ -173,6 +174,26 @@ final class NativeVisibilityManager {
             sections.filter { wanted.contains($0.value) }.map(\.key).sorted()
         }
     }
+
+    /// A menu bar item as last seen while it was drawn, for the Ice Bar.
+    struct ItemRecord: Identifiable {
+        let id = UUID()
+        let bundleIdentifier: String
+        /// The item's frame, in Core Graphics coordinates, when it was last read.
+        let frame: CGRect
+        /// The item's index among its app's items, ordered from left to right.
+        let index: Int
+        /// An image of the item, cut from a capture of the menu bar.
+        let image: CGImage?
+        /// The scale factor of the display the image was captured on.
+        let scale: CGFloat
+    }
+
+    /// The menu bar's items as last seen while they were drawn.
+    @Published private(set) var itemRecords = [ItemRecord]()
+
+    /// Apps whose items are shown for a moment, e.g. to click one from the Ice Bar.
+    private var temporarilyShown = Set<String>()
 
     private struct InventoryItem {
         let bundleIdentifier: String
@@ -345,9 +366,15 @@ final class NativeVisibilityManager {
                     }
                     return (app.processIdentifier, bundleIdentifier)
                 }
-                let inventory = await Task.detached(priority: .userInitiated) {
-                    Self.inventory(of: apps)
+                let target = Self.captureTarget(for: appState.menuBarManager.section(withName: .hidden)?.controlItem.window?.screen)
+                let (inventory, images) = await Task.detached(priority: .userInitiated) {
+                    let inventory = Self.inventory(of: apps)
+                    return (inventory, await Self.captureImages(of: inventory, target: target))
                 }.value
+                let launchedRecords = Self.records(for: inventory, images: images, scale: target?.scale ?? 1)
+                    .filter { $0.frame.minX >= 0 && pending.contains($0.bundleIdentifier) }
+                self.itemRecords.removeAll { record in launchedRecords.contains { $0.bundleIdentifier == record.bundleIdentifier } }
+                self.itemRecords.append(contentsOf: launchedRecords)
                 var changed = false
                 // Items that aren't drawn report a negative position.
                 for item in inventory where item.frame.minX >= 0 && pending.contains(item.bundleIdentifier) {
@@ -429,8 +456,11 @@ final class NativeVisibilityManager {
             return (app.processIdentifier, bundleIdentifier)
         }
 
+        let captureTarget = Self.captureTarget(for: appState.menuBarManager.section(withName: .hidden)?.controlItem.window?.screen)
+
         Task.detached(priority: .userInitiated) {
             let inventory = Self.inventory(of: apps)
+            let images = await Self.captureImages(of: inventory, target: captureTarget)
             await MainActor.run { [weak self] in
                 guard let self, generation == self.generation else {
                     return
@@ -453,6 +483,7 @@ final class NativeVisibilityManager {
                     """
                 )
                 self.layout = layout
+                self.itemRecords = Self.records(for: inventory, images: images, scale: captureTarget?.scale ?? 1)
                 hasReadLayout = true
                 lastWarning = nil
                 body(layout)
@@ -468,7 +499,7 @@ final class NativeVisibilityManager {
     private func activate(hiding hiddenBundles: [String]) {
         generation += 1
         let generation = generation
-        let hidden = Set(hiddenBundles).subtracting([Constants.bundleIdentifier])
+        let hidden = Set(hiddenBundles).subtracting([Constants.bundleIdentifier]).subtracting(temporarilyShown)
         let running = NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
         let allowed = Set(running + [Constants.bundleIdentifier]).subtracting(hidden).sorted()
         MenuBarClientCore.activate(
@@ -505,6 +536,184 @@ final class NativeVisibilityManager {
     /// as of the most recent layout read.
     func bundleIdentifiers(in section: MenuBarSection.Name) -> [String] {
         layout?.bundles(in: [section]) ?? []
+    }
+
+    // MARK: Ice Bar
+
+    /// The records of the items in the given section, ordered from left to right.
+    func itemRecords(in section: MenuBarSection.Name) -> [ItemRecord] {
+        guard let layout else {
+            return []
+        }
+        return itemRecords
+            .filter { layout.sections[$0.bundleIdentifier] == section }
+            .sorted { $0.frame.minX < $1.frame.minX }
+    }
+
+    /// Opens the menu of the given item, showing its app's items for a moment.
+    ///
+    /// A concealed item doesn't respond to Accessibility presses, so its app is
+    /// allowed until the item is drawn, then the item is clicked where it
+    /// appears. The app is hidden again once its menu closes. The approach and
+    /// timings follow jordanbaird/Ice#1001.
+    func openItem(_ record: ItemRecord, mouseButton: CGMouseButton) async {
+        guard
+            let app = NSRunningApplication.runningApplications(withBundleIdentifier: record.bundleIdentifier).first
+        else {
+            return
+        }
+        temporarilyShown.insert(record.bundleIdentifier)
+        update()
+        defer {
+            temporarilyShown.remove(record.bundleIdentifier)
+            update()
+        }
+
+        // A shown item is drawn 0.4–0.6 s after its app is allowed.
+        var frame: CGRect?
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(150))
+            let frames = await Task.detached(priority: .userInitiated) {
+                Self.inventory(of: [(app.processIdentifier, record.bundleIdentifier)])
+                    .map(\.frame)
+                    .filter { $0.minX >= 0 }
+                    .sorted { $0.minX < $1.minX }
+            }.value
+            if frames.indices.contains(record.index) {
+                frame = frames[record.index]
+                // Wait for the menu bar to settle after the item appears.
+                try? await Task.sleep(for: .milliseconds(150))
+                break
+            }
+        }
+        guard let frame else {
+            Logger.nativeVisibility.warning("Item of \(record.bundleIdentifier) was not drawn in time")
+            return
+        }
+
+        let baseline = Self.windowNumbers(of: app.processIdentifier)
+        Self.postClick(at: CGPoint(x: frame.midX, y: frame.midY), mouseButton: mouseButton)
+
+        // Keep the app shown while the menu or window that opened is up.
+        try? await Task.sleep(for: .milliseconds(400))
+        for _ in 0..<240 {
+            guard !Self.windowNumbers(of: app.processIdentifier).subtracting(baseline).isEmpty else {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    private static func windowNumbers(of pid: pid_t) -> Set<Int> {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return Set(windows.compactMap { window in
+            guard (window[kCGWindowOwnerPID as String] as? pid_t) == pid else {
+                return nil
+            }
+            return window[kCGWindowNumber as String] as? Int
+        })
+    }
+
+    /// Posts a click at the given point, then puts the pointer back.
+    private static func postClick(at point: CGPoint, mouseButton: CGMouseButton) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let original = CGEvent(source: nil)?.location
+        let types: [CGEventType] = mouseButton == .right ? [.rightMouseDown, .rightMouseUp] : [.leftMouseDown, .leftMouseUp]
+        for type in types {
+            CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: mouseButton)?
+                .post(tap: .cghidEventTap)
+        }
+        if let original {
+            CGWarpMouseCursorPosition(original)
+        }
+    }
+
+    // MARK: Capture
+
+    /// What's needed to capture a display's menu bar.
+    private struct CaptureTarget: Sendable {
+        let displayID: CGDirectDisplayID
+        /// The menu bar's frame, in Core Graphics coordinates.
+        let menuBarFrame: CGRect
+        let scale: CGFloat
+    }
+
+    private static func captureTarget(for screen: NSScreen?) -> CaptureTarget? {
+        guard
+            CGPreflightScreenCaptureAccess(),
+            let screen,
+            let mainScreen = NSScreen.screens.first
+        else {
+            return nil
+        }
+        let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+        guard menuBarHeight > 0 else {
+            return nil
+        }
+        // Core Graphics coordinates have their origin at the top left of the main screen.
+        let menuBarFrame = CGRect(
+            x: screen.frame.minX,
+            y: mainScreen.frame.maxY - screen.frame.maxY,
+            width: screen.frame.width,
+            height: menuBarHeight
+        )
+        return CaptureTarget(displayID: screen.displayID, menuBarFrame: menuBarFrame, scale: screen.backingScaleFactor)
+    }
+
+    /// Captures the menu bar and cuts out an image of each item drawn on it.
+    ///
+    /// MenuBarAgent draws every item into one bar, so only a capture of the
+    /// display holds them (as measured in jordanbaird/Ice#1001).
+    private nonisolated static func captureImages(of inventory: [InventoryItem], target: CaptureTarget?) async -> [CGImage?] {
+        guard let target else {
+            return inventory.map { _ in nil }
+        }
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let display = content.displays.first(where: { $0.displayID == target.displayID }) else {
+                return inventory.map { _ in nil }
+            }
+            let configuration = SCStreamConfiguration()
+            configuration.sourceRect = CGRect(origin: .zero, size: target.menuBarFrame.size)
+            configuration.width = Int(target.menuBarFrame.width * target.scale)
+            configuration.height = Int(target.menuBarFrame.height * target.scale)
+            configuration.showsCursor = false
+            let strip = try await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(display: display, excludingWindows: []),
+                configuration: configuration
+            )
+            return inventory.map { item in
+                guard
+                    item.frame.minX >= target.menuBarFrame.minX,
+                    item.frame.maxX <= target.menuBarFrame.maxX,
+                    abs(item.frame.midY - target.menuBarFrame.midY) < target.menuBarFrame.height
+                else {
+                    return nil
+                }
+                let rect = CGRect(
+                    x: (item.frame.minX - target.menuBarFrame.minX) * target.scale,
+                    y: 0,
+                    width: item.frame.width * target.scale,
+                    height: target.menuBarFrame.height * target.scale
+                ).integral
+                return strip.cropping(to: rect)
+            }
+        } catch {
+            Logger.nativeVisibility.error("Failed to capture the menu bar: \(error.localizedDescription)")
+            return inventory.map { _ in nil }
+        }
+    }
+
+    private static func records(for inventory: [InventoryItem], images: [CGImage?], scale: CGFloat) -> [ItemRecord] {
+        var records = [ItemRecord]()
+        let indexed = zip(inventory, images).sorted { $0.0.frame.minX < $1.0.frame.minX }
+        var counts = [String: Int]()
+        for (item, image) in indexed where item.frame.minX >= 0 {
+            let index = counts[item.bundleIdentifier, default: 0]
+            counts[item.bundleIdentifier] = index + 1
+            records.append(ItemRecord(bundleIdentifier: item.bundleIdentifier, frame: item.frame, index: index, image: image, scale: scale))
+        }
+        return records
     }
 
     // MARK: Hit Testing
