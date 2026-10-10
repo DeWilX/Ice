@@ -101,7 +101,9 @@ final class MenuBarSearchPanel: NSPanel {
         // Important that we set the navigation state before updating the cache.
         appState.navigationState.isSearchPresented = true
 
-        if ScreenCapture.cachedCheckPermissions() {
+        // On macOS 27, items are drawn from the images the native visibility
+        // manager captures instead.
+        if !NativeVisibilityManager.isEnabled, ScreenCapture.cachedCheckPermissions() {
             await appState.imageCache.updateCache()
         }
 
@@ -155,6 +157,7 @@ private final class MenuBarSearchHostingView: NSHostingView<AnyView> {
         super.init(
             rootView: MenuBarSearchContentView(closePanel: { [weak panel] in panel?.close() })
                 .environmentObject(appState.itemManager)
+                .environmentObject(appState.menuBarManager.nativeVisibilityManager)
                 .environmentObject(appState.imageCache)
                 .erasedToAnyView()
         )
@@ -177,9 +180,11 @@ private struct MenuBarSearchContentView: View {
     private enum ItemID: Hashable {
         case header(MenuBarSection.Name)
         case item(MenuBarItemInfo)
+        case nativeItem(UUID)
     }
 
     @EnvironmentObject var itemManager: MenuBarItemManager
+    @EnvironmentObject var nativeVisibilityManager: NativeVisibilityManager
     @State private var searchText = ""
     @State private var displayedItems = [SectionedListItem<ItemID>]()
     @State private var selection: ItemID?
@@ -247,6 +252,9 @@ private struct MenuBarSearchContentView: View {
         .onChange(of: itemManager.itemCache, initial: true) {
             updateDisplayedItems()
         }
+        .onChange(of: nativeVisibilityManager.itemRecords.map(\.id)) {
+            updateDisplayedItems()
+        }
     }
 
     private func selectFirstDisplayedItem() {
@@ -267,6 +275,21 @@ private struct MenuBarSearchContentView: View {
                     .padding(.vertical, 10)
             }
             items.append((headerItem, section.displayString))
+
+            // On macOS 27, items have no windows, so list the records of the
+            // items as last seen while they were drawn.
+            if NativeVisibilityManager.isEnabled {
+                for record in nativeVisibilityManager.itemRecords(in: section).reversed() {
+                    let name = NativeSearchItemView.name(of: record)
+                    let listItem = ListItem.item(id: .nativeItem(record.id)) {
+                        performNativeAction(for: record)
+                    } content: {
+                        NativeSearchItemView(record: record)
+                    }
+                    items.append((listItem, name))
+                }
+                return
+            }
 
             for item in itemManager.itemCache.managedItems(for: section).reversed() {
                 let listItem = ListItem.item(id: .item(item.info)) {
@@ -296,8 +319,16 @@ private struct MenuBarSearchContentView: View {
         switch selection {
         case .item(let info):
             itemManager.itemCache.managedItems.first { $0.info == info }
-        case .header:
+        case .header, .nativeItem:
             nil
+        }
+    }
+
+    private func performNativeAction(for record: NativeVisibilityManager.ItemRecord) {
+        closePanel()
+        Task {
+            try await Task.sleep(for: .milliseconds(25))
+            await nativeVisibilityManager.openItem(record, mouseButton: .left)
         }
     }
 
@@ -465,5 +496,34 @@ private struct MenuBarSearchItemView: View {
                     .frame(height: 24)
             }
         }
+    }
+}
+
+/// A search result on macOS 27, drawn from a record of the item.
+private struct NativeSearchItemView: View {
+    let record: NativeVisibilityManager.ItemRecord
+
+    static func name(of record: NativeVisibilityManager.ItemRecord) -> String {
+        NSRunningApplication.runningApplications(withBundleIdentifier: record.bundleIdentifier).first?.localizedName
+            ?? record.bundleIdentifier
+    }
+
+    var body: some View {
+        HStack {
+            if let icon = NSRunningApplication.runningApplications(withBundleIdentifier: record.bundleIdentifier).first?.icon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 24, height: 24)
+            }
+            Text(Self.name(of: record))
+            Spacer()
+            if let image = record.image {
+                Image(decorative: image, scale: record.scale)
+                    .frame(height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .circular))
+            }
+        }
+        .padding(8)
     }
 }
