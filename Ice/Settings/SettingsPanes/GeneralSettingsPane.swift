@@ -8,6 +8,7 @@ import SwiftUI
 
 struct GeneralSettingsPane: View {
     @EnvironmentObject var appState: AppState
+    @State private var isLaunchAtLoginEnabled = LaunchAtLogin.isEnabled
     @State private var isImportingCustomIceIcon = false
     @State private var isPresentingError = false
     @State private var presentedError: LocalizedErrorWrapper?
@@ -85,7 +86,12 @@ struct GeneralSettingsPane: View {
 
     @ViewBuilder
     private var launchAtLogin: some View {
-        LaunchAtLogin.Toggle()
+        // Read once instead of on every update, as each read is a round trip
+        // to the system and slows down switching to this pane.
+        Toggle("Launch at login", isOn: $isLaunchAtLoginEnabled)
+            .onChange(of: isLaunchAtLoginEnabled) { _, newValue in
+                LaunchAtLogin.isEnabled = newValue
+            }
     }
 
     @ViewBuilder

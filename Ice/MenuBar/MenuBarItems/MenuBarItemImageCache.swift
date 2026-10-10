@@ -31,6 +31,10 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Sets up the cache.
     @MainActor
     func performSetup() {
+        // On macOS 27, menu bar items don't have windows that can be captured.
+        guard !NativeVisibilityManager.isEnabled else {
+            return
+        }
         configureCancellables()
     }
 

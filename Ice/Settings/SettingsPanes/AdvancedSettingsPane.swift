@@ -29,7 +29,11 @@ struct AdvancedSettingsPane: View {
     var body: some View {
         IceForm {
             IceSection {
-                hideApplicationMenus
+                // On macOS 27, Ice can't tell where items are relative to the
+                // application menus, and hidden items aren't shown temporarily.
+                if !NativeVisibilityManager.isEnabled {
+                    hideApplicationMenus
+                }
                 showSectionDividers
                 showAllSectionsOnUserDrag
                 showContextMenuOnRightClick
@@ -40,7 +44,9 @@ struct AdvancedSettingsPane: View {
             }
             IceSection {
                 showOnHoverDelaySlider
-                tempShowIntervalSlider
+                if !NativeVisibilityManager.isEnabled {
+                    tempShowIntervalSlider
+                }
             }
             IceSection("Permissions") {
                 allPermissions

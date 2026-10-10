@@ -169,7 +169,10 @@ final class MenuBarManager: ObservableObject {
                 //   * The menu bar is hidden by the system.
                 //   * The active space is fullscreen.
                 //   * The settings window is visible.
+                // On macOS 27, the item windows this relies on don't exist, and the
+                // whole menu bar would be taken for an item overlapping the menus.
                 guard
+                    !NativeVisibilityManager.isEnabled,
                     appState.settingsManager.advancedSettingsManager.hideApplicationMenus,
                     !isMenuBarHiddenBySystem,
                     !appState.isActiveSpaceFullscreen,
@@ -232,6 +235,8 @@ final class MenuBarManager: ObservableObject {
     /// of the menu bar.
     func updateAverageColorInfo() {
         guard
+            // On macOS 27, only the layout bars used this, and they aren't shown.
+            !NativeVisibilityManager.isEnabled,
             canUpdateAverageColorInfo,
             let screen = appState?.settingsWindow?.screen
         else {

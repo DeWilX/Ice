@@ -230,6 +230,23 @@ final class NativeVisibilityManager {
         }
         .store(in: &cancellables)
 
+        // Each restriction allows the apps that were running when it was made,
+        // so an app launched later would be hidden wherever its items are. The
+        // workspace's launch notification isn't posted for agent apps, which
+        // most menu bar apps are, so observe the running apps instead.
+        NSWorkspace.shared.publisher(for: \.runningApplications)
+            .map { Set($0.compactMap(\.bundleIdentifier)) }
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, assertion != nil else {
+                    return
+                }
+                update()
+            }
+            .store(in: &cancellables)
+
         Publishers.MergeMany(appState.menuBarManager.sections.map { $0.controlItem.$windowFrame.removeDuplicates() })
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
