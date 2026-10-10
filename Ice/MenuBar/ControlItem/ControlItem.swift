@@ -606,7 +606,17 @@ final class ControlItem {
             return
         }
         let menu = createMenu(with: appState)
-        statusItem.showMenu(menu)
+        if
+            #available(macOS 27.0, *),
+            let window = statusItem.button?.window,
+            let screen = NSScreen.screens.first(where: { $0.frame.minX <= window.frame.minX && window.frame.minX < $0.frame.maxX })
+        {
+            // On macOS 27, the status item's window is taller than the menu bar,
+            // so a menu attached to it opens well below the menu bar.
+            menu.popUp(positioning: nil, at: CGPoint(x: window.frame.minX, y: screen.visibleFrame.maxY - 5), in: nil)
+        } else {
+            statusItem.showMenu(menu)
+        }
     }
 
     /// Toggles the menu bar section associated with the given menu item.
