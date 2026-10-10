@@ -26,6 +26,9 @@ final class EventManager {
         }
         switch event.type {
         case .leftMouseDown:
+            if NativeVisibilityManager.isEnabled, let location = MouseCursor.locationCoreGraphics {
+                appState?.menuBarManager.nativeVisibilityManager.handleLeftMouseDown(at: location)
+            }
             handleShowOnClick()
             handleSmartRehide(with: event)
         case .rightMouseDown:

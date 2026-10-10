@@ -195,6 +195,14 @@ final class NativeVisibilityManager: ObservableObject {
     /// Apps whose items are shown for a moment, e.g. to click one from the Ice Bar.
     private var temporarilyShown = Set<String>()
 
+    /// A Boolean value that indicates whether the next layout read should use
+    /// the cached layout, even though nothing is hidden.
+    private var usesCachedLayoutOnce = false
+
+    /// A Boolean value that indicates whether a click on the clock is being
+    /// passed on to it.
+    private var isPassingClockClick = false
+
     private struct InventoryItem {
         let bundleIdentifier: String
         let frame: CGRect
@@ -414,9 +422,11 @@ final class NativeVisibilityManager: ObservableObject {
     /// Reads the current layout, or returns the cached one if items are
     /// currently hidden.
     private func withLayout(alwaysHiddenEnabled: Bool, body: @escaping (Layout?) -> Void) {
-        if assertion != nil, let layout {
+        if assertion != nil || usesCachedLayoutOnce, let layout {
+            usesCachedLayoutOnce = false
             return body(layout)
         }
+        usesCachedLayoutOnce = false
         guard
             let appState,
             hasReadLayout || Date().timeIntervalSince(lastControlItemMove) >= 1,
@@ -536,6 +546,84 @@ final class NativeVisibilityManager: ObservableObject {
     /// as of the most recent layout read.
     func bundleIdentifiers(in section: MenuBarSection.Name) -> [String] {
         layout?.bundles(in: [section]) ?? []
+    }
+
+    // MARK: Clock
+
+    /// Passes a click on the clock on to it while items are hidden.
+    ///
+    /// The restriction is the one behind assessment mode, which blocks
+    /// Notification Center, so a click on the clock does nothing while items
+    /// are hidden. The restriction is lifted, the click is made again, and the
+    /// restriction comes back as soon as Notification Center opens or closes,
+    /// which it stays through. Other system items open while items are hidden.
+    func handleLeftMouseDown(at point: CGPoint) {
+        guard
+            assertion != nil,
+            !isPassingClockClick,
+            Self.systemItemIdentifier(at: point) == "com.apple.menuextra.clock"
+        else {
+            return
+        }
+        isPassingClockClick = true
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            let wasOpen = Self.isNotificationCenterOpen()
+            releaseAssertion()
+            // Let the original click finish and the restriction lift.
+            try? await Task.sleep(for: .milliseconds(150))
+            Self.postClick(at: point, mouseButton: .left)
+            for _ in 0..<50 where Self.isNotificationCenterOpen() == wasOpen {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            isPassingClockClick = false
+            // Nothing moved, so hide the same apps again without reading the
+            // sections, keeping the hidden items' appearance short.
+            usesCachedLayoutOnce = true
+            update()
+        }
+    }
+
+    private static func isNotificationCenterOpen() -> Bool {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.contains { window in
+            (window[kCGWindowOwnerName as String] as? String) == "Notification Center" &&
+            (window[kCGWindowName as String] as? String) == "Notification Center"
+        }
+    }
+
+    /// Returns the identifier of the system item at the given point, in Core
+    /// Graphics coordinates, e.g. "com.apple.menuextra.clock".
+    private static func systemItemIdentifier(at point: CGPoint) -> String? {
+        var hitElement: AXUIElement?
+        guard
+            AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hitElement) == .success,
+            var element = hitElement
+        else {
+            return nil
+        }
+        for _ in 0..<3 {
+            var identifier: CFTypeRef?
+            if
+                AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &identifier) == .success,
+                let identifier = identifier as? String,
+                identifier.hasPrefix("com.apple.menuextra.")
+            {
+                return identifier
+            }
+            var parent: CFTypeRef?
+            guard
+                AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parent) == .success,
+                let parent,
+                CFGetTypeID(parent) == AXUIElementGetTypeID()
+            else {
+                return nil
+            }
+            element = parent as! AXUIElement
+        }
+        return nil
     }
 
     // MARK: Ice Bar
