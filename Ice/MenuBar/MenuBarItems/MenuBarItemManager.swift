@@ -198,10 +198,21 @@ final class MenuBarItemManager: ObservableObject {
             }
             .store(in: &c)
 
-        Publishers.Merge(
-            UniversalEventMonitor.publisher(for: mouseTrackingMask),
-            RunLoopLocalEventMonitor.publisher(for: mouseTrackingMask, mode: .eventTracking)
-        )
+        // On macOS 27, the run loop monitor interferes with event tracking in
+        // Ice's own windows, making buttons unresponsive. It is only needed for
+        // moving items, which the native visibility mechanism doesn't use.
+        let mouseTrackingPublisher: AnyPublisher<NSEvent, Never> = if NativeVisibilityManager.isEnabled {
+            UniversalEventMonitor.publisher(for: mouseTrackingMask)
+                .eraseToAnyPublisher()
+        } else {
+            Publishers.Merge(
+                UniversalEventMonitor.publisher(for: mouseTrackingMask),
+                RunLoopLocalEventMonitor.publisher(for: mouseTrackingMask, mode: .eventTracking)
+            )
+            .eraseToAnyPublisher()
+        }
+
+        mouseTrackingPublisher
         .removeDuplicates()
         .sink { [weak self] event in
             guard let self else {

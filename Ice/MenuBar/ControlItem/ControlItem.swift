@@ -158,7 +158,9 @@ final class ControlItem {
                     case .visible: Lengths.standard
                     case .hidden, .alwaysHidden:
                         switch state {
-                        case .hideItems: Lengths.expanded
+                        // On macOS 27, expanded control items are removed from the menu bar
+                        // instead of pushing items off screen, so the native mechanism hides them.
+                        case .hideItems: NativeVisibilityManager.isEnabled ? Lengths.standard : Lengths.expanded
                         case .showItems: Lengths.standard
                         }
                     }
@@ -397,7 +399,7 @@ final class ControlItem {
         switch event.type {
         case .leftMouseDown, .leftMouseUp:
             if NSEvent.modifierFlags == .control {
-                statusItem.showMenu(createMenu(with: appState))
+                showMenu(createMenu(with: appState))
             } else if
                 NSEvent.modifierFlags == .option,
                 appState.settingsManager.advancedSettingsManager.canToggleAlwaysHiddenSection
@@ -409,10 +411,27 @@ final class ControlItem {
                 section?.toggle()
             }
         case .rightMouseUp:
-            statusItem.showMenu(createMenu(with: appState))
+            showMenu(createMenu(with: appState))
         default:
             break
         }
+    }
+
+    /// Shows the given menu under the control item.
+    private func showMenu(_ menu: NSMenu) {
+        guard NativeVisibilityManager.isEnabled, let window else {
+            statusItem.showMenu(menu)
+            return
+        }
+        // On macOS 27, the status item's window is taller than the menu bar,
+        // so a menu attached to it opens too far below the menu bar.
+        let x = window.frame.minX
+        let screen = NSScreen.screens.first { $0.frame.minX <= x && x < $0.frame.maxX } ?? NSScreen.main
+        guard let screen else {
+            statusItem.showMenu(menu)
+            return
+        }
+        menu.popUp(positioning: nil, at: CGPoint(x: x, y: screen.visibleFrame.maxY - 5), in: nil)
     }
 
     /// Creates a menu to show under the control item.

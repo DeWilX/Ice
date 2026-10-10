@@ -40,6 +40,9 @@ final class MenuBarManager: ObservableObject {
     /// The panel that contains the menu bar search interface.
     let searchPanel: MenuBarSearchPanel
 
+    /// The manager that hides menu bar items on macOS 27 and later.
+    let nativeVisibilityManager: NativeVisibilityManager
+
     /// A Boolean value that indicates whether the manager can update its stored
     /// information for the menu bar's average color.
     private var canUpdateAverageColorInfo: Bool {
@@ -50,6 +53,7 @@ final class MenuBarManager: ObservableObject {
     init(appState: AppState) {
         self.iceBarPanel = IceBarPanel(appState: appState)
         self.searchPanel = MenuBarSearchPanel(appState: appState)
+        self.nativeVisibilityManager = NativeVisibilityManager(appState: appState)
         self.appState = appState
     }
 
@@ -58,6 +62,7 @@ final class MenuBarManager: ObservableObject {
         initializeSections()
         configureCancellables()
         iceBarPanel.performSetup()
+        nativeVisibilityManager.performSetup()
     }
 
     /// Performs the initial setup of the menu bar manager's sections.

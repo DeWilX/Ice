@@ -9,7 +9,9 @@ struct MenuBarLayoutSettingsPane: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        if !ScreenCapture.cachedCheckPermissions() {
+        if NativeVisibilityManager.isEnabled {
+            nativeLayout
+        } else if !ScreenCapture.cachedCheckPermissions() {
             missingScreenRecordingPermission
         } else if appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults {
             cannotArrange
@@ -45,6 +47,75 @@ struct MenuBarLayoutSettingsPane: View {
         VStack(spacing: 25) {
             ForEach(MenuBarSection.Name.allCases, id: \.self) { section in
                 layoutBar(for: section)
+            }
+        }
+    }
+
+    /// On macOS 27, menu bar items no longer have their own windows, so they
+    /// can't be captured or moved by Ice. Show the apps in each section instead.
+    @ViewBuilder
+    private var nativeLayout: some View {
+        IceForm(alignment: .leading, spacing: 20) {
+            Text("Arrange menu bar items by Command + dragging them in the menu bar")
+                .font(.title2)
+
+            IceGroupBox {
+                AnnotationView(
+                    alignment: .center,
+                    font: .callout.bold()
+                ) {
+                    Label {
+                        Text("Items to the left of the section divider are hidden. Hiding applies to all of an app's items at once.")
+                    } icon: {
+                        Image(systemName: "lightbulb")
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 25) {
+                ForEach(MenuBarSection.Name.allCases, id: \.self) { name in
+                    if
+                        let section = appState.menuBarManager.section(withName: name),
+                        section.isEnabled
+                    {
+                        nativeSectionList(for: name)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func nativeSectionList(for name: MenuBarSection.Name) -> some View {
+        let apps = appState.menuBarManager.nativeVisibilityManager
+            .bundleIdentifiers(in: name)
+            .compactMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(name.displayString) Section")
+                .font(.system(size: 14))
+                .padding(.leading, 2)
+
+            IceGroupBox {
+                if apps.isEmpty {
+                    Text("No apps")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(apps, id: \.processIdentifier) { app in
+                            HStack(spacing: 8) {
+                                if let icon = app.icon {
+                                    Image(nsImage: icon)
+                                        .resizable()
+                                        .frame(width: 18, height: 18)
+                                }
+                                Text(app.localizedName ?? app.bundleIdentifier ?? "")
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }

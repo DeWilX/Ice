@@ -490,6 +490,11 @@ extension EventManager {
         else {
             return false
         }
+        if NativeVisibilityManager.isEnabled {
+            // On macOS 27, menu bar items no longer have their own windows,
+            // so hit test through the Accessibility API instead.
+            return NativeVisibilityManager.isMenuBarItem(at: mouseLocation)
+        }
         let menuBarItems = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: true)
         return menuBarItems.contains { $0.frame.contains(mouseLocation) }
     }

@@ -124,7 +124,7 @@
 				1750618F2B1543DD003144CD /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */,
 				1787C4252B16890B002F50DF /* XCRemoteSwiftPackageReference "AXSwift" */,
 				170423D72B56DE78004A2549 /* XCRemoteSwiftPackageReference "Sparkle" */,
-				17F71BB32B880B4500905CBA /* XCRemoteSwiftPackageReference "CompactSlider" */,
+				17F71BB32B880B4500905CBA /* XCLocalSwiftPackageReference "Packages/CompactSlider" */,
 				7127A9FB2C4881BC00D99DEF /* XCRemoteSwiftPackageReference "Ifrit" */,
 			);
 			productRefGroup = 7166832B2A767E6A006ABF84 /* Products */;
@@ -387,6 +387,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		17F71BB32B880B4500905CBA /* XCLocalSwiftPackageReference "Packages/CompactSlider" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/CompactSlider;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		170423D72B56DE78004A2549 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -410,14 +417,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.3.2;
-			};
-		};
-		17F71BB32B880B4500905CBA /* XCRemoteSwiftPackageReference "CompactSlider" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/buh/CompactSlider";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.1.5;
 			};
 		};
 		7127A9FB2C4881BC00D99DEF /* XCRemoteSwiftPackageReference "Ifrit" */ = {
@@ -448,7 +447,7 @@
 		};
 		17F71BB42B880B4500905CBA /* CompactSlider */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 17F71BB32B880B4500905CBA /* XCRemoteSwiftPackageReference "CompactSlider" */;
+			package = 17F71BB32B880B4500905CBA /* XCLocalSwiftPackageReference "Packages/CompactSlider" */;
 			productName = CompactSlider;
 		};
 		7127A9FE2C4886D100D99DEF /* IfritStatic */ = {
